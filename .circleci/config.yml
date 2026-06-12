@@ -1,20 +1,14 @@
 version: 2.1
 
-jobs:
-  deploy:
+executors:
+  node:
     docker:
       - image: cimg/node:22.11
     working_directory: ~/project
-    environment:
-      PROJECT_NAME: dynamo-db-api
-      ENVIRONMENT_NAME: dev
-      ECR_REPOSITORY_NAME: dynamo-db-api
-      STACK_NAME: dynamo-db-api-dev
-      USERS_TABLE_NAME: Users
+
+commands:
+  install_aws_cli:
     steps:
-      - checkout
-      - setup_remote_docker:
-          docker_layer_caching: true
       - run:
           name: Install AWS CLI
           command: |
@@ -23,23 +17,81 @@ jobs:
             curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
             unzip -q awscliv2.zip
             sudo ./aws/install
+
+  restore_npm_cache:
+    steps:
+      - restore_cache:
+          keys:
+            - npm-deps-v1-{{ checksum "package-lock.json" }}
+            - npm-deps-v1-
+
+  save_npm_cache:
+    steps:
+      - save_cache:
+          key: npm-deps-v1-{{ checksum "package-lock.json" }}
+          paths:
+            - ~/.npm
+
+jobs:
+  install-dependencies:
+    executor: node
+    steps:
+      - checkout
+      - restore_npm_cache
       - run:
           name: Install dependencies
           command: npm ci
-          working_directory: ~/project/dynamo-db
+      - save_npm_cache
+
+  lint:
+    executor: node
+    steps:
+      - checkout
+      - restore_npm_cache
       - run:
-          name: Build and test
-          command: |
-            npm run build
-            npm run lint
-            npm run test
-          working_directory: ~/project/dynamo-db
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Lint
+          command: npm run lint
+
+  test:
+    executor: node
+    steps:
+      - checkout
+      - restore_npm_cache
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Test
+          command: npm run test
+
+  build:
+    executor: node
+    steps:
+      - checkout
+      - restore_npm_cache
+      - run:
+          name: Install dependencies
+          command: npm ci
+      - run:
+          name: Build
+          command: npm run build
+
+  build-and-push-image:
+    executor: node
+    environment:
+      ECR_REPOSITORY_NAME: dynamo-db-api
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: true
+      - install_aws_cli
       - run:
           name: Build and push Docker image
           command: |
             : "${AWS_REGION:?Set AWS_REGION in CircleCI project environment variables}"
-            : "${VPC_ID:?Set VPC_ID in CircleCI project environment variables}"
-            : "${PUBLIC_SUBNET_IDS:?Set PUBLIC_SUBNET_IDS as a comma-separated list in CircleCI project environment variables}"
 
             AWS_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
             ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -55,11 +107,34 @@ jobs:
             docker build -t "${IMAGE_URI}" .
             docker push "${IMAGE_URI}"
 
-            echo "export IMAGE_URI=${IMAGE_URI}" >> "${BASH_ENV}"
-          working_directory: ~/project/dynamo-db
+            mkdir -p /tmp/image
+            echo "export IMAGE_URI=${IMAGE_URI}" > /tmp/image/image.env
+      - persist_to_workspace:
+          root: /tmp/image
+          paths:
+            - image.env
+
+  deploy:
+    executor: node
+    environment:
+      PROJECT_NAME: dynamo-db-api
+      ENVIRONMENT_NAME: dev
+      STACK_NAME: dynamo-db-api-dev
+      USERS_TABLE_NAME: Users
+    steps:
+      - checkout
+      - attach_workspace:
+          at: /tmp/image
+      - install_aws_cli
       - run:
           name: Deploy CloudFormation stack
           command: |
+            : "${AWS_REGION:?Set AWS_REGION in CircleCI project environment variables}"
+            : "${VPC_ID:?Set VPC_ID in CircleCI project environment variables}"
+            : "${PUBLIC_SUBNET_IDS:?Set PUBLIC_SUBNET_IDS as a comma-separated list in CircleCI project environment variables}"
+
+            source /tmp/image/image.env
+
             aws cloudformation deploy \
               --stack-name "${STACK_NAME}" \
               --template-file infrastructure/cloudformation.yml \
@@ -76,12 +151,48 @@ jobs:
               --stack-name "${STACK_NAME}" \
               --query "Stacks[0].Outputs" \
               --output table
-          working_directory: ~/project/dynamo-db
 
 workflows:
   deploy:
     jobs:
+      - install-dependencies:
+          filters:
+            branches:
+              only:
+                - main
+      - lint:
+          requires:
+            - install-dependencies
+          filters:
+            branches:
+              only:
+                - main
+      - test:
+          requires:
+            - install-dependencies
+          filters:
+            branches:
+              only:
+                - main
+      - build:
+          requires:
+            - install-dependencies
+          filters:
+            branches:
+              only:
+                - main
+      - build-and-push-image:
+          requires:
+            - lint
+            - test
+            - build
+          filters:
+            branches:
+              only:
+                - main
       - deploy:
+          requires:
+            - build-and-push-image
           filters:
             branches:
               only:
