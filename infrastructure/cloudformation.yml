@@ -11,10 +11,15 @@ Parameters:
   ImageUri:
     Type: String
     Description: Full container image URI to deploy.
-  VpcId:
-    Type: AWS::EC2::VPC::Id
-  PublicSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  PublicSubnetOneCidr:
+    Type: String
+    Default: 10.0.1.0/24
+  PublicSubnetTwoCidr:
+    Type: String
+    Default: 10.0.2.0/24
   ContainerPort:
     Type: Number
     Default: 3000
@@ -34,6 +39,80 @@ Parameters:
     Default: Users
 
 Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-igw
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref PublicSubnetOneCidr
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-public-1
+
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: !Ref PublicSubnetTwoCidr
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-public-2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName}-${EnvironmentName}-public-rt
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - VpcGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetOne
+
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetTwo
+
   UsersTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -63,7 +142,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow HTTP traffic to the application load balancer.
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -77,7 +156,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow load balancer traffic to the ECS service.
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: !Ref ContainerPort
@@ -94,14 +173,16 @@ Resources:
       Scheme: internet-facing
       SecurityGroups:
         - !Ref AlbSecurityGroup
-      Subnets: !Ref PublicSubnetIds
+      Subnets:
+        - !Ref PublicSubnetOne
+        - !Ref PublicSubnetTwo
       Type: application
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       Name: !Sub ${ProjectName}-${EnvironmentName}
-      VpcId: !Ref VpcId
+      VpcId: !Ref Vpc
       Port: !Ref ContainerPort
       Protocol: HTTP
       TargetType: ip
@@ -205,13 +286,21 @@ Resources:
           AssignPublicIp: ENABLED
           SecurityGroups:
             - !Ref ServiceSecurityGroup
-          Subnets: !Ref PublicSubnetIds
+          Subnets:
+            - !Ref PublicSubnetOne
+            - !Ref PublicSubnetTwo
       LoadBalancers:
         - ContainerName: !Ref ProjectName
           ContainerPort: !Ref ContainerPort
           TargetGroupArn: !Ref TargetGroup
 
 Outputs:
+  VpcId:
+    Value: !Ref Vpc
+  PublicSubnetOne:
+    Value: !Ref PublicSubnetOne
+  PublicSubnetTwo:
+    Value: !Ref PublicSubnetTwo
   ApiUrl:
     Description: Public URL for the deployed API.
     Value: !Sub http://${LoadBalancer.DNSName}
