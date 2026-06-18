@@ -36,17 +36,20 @@ echo "Using AWS account: ${AWS_ACCOUNT_ID}"
 echo "Using EKS cluster: ${CLUSTER_NAME}"
 echo "Using image: ${IMAGE_URI}"
 
-if [[ "${CREATE_CLUSTER}" == "true" ]]; then
-  if aws eks describe-cluster --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
-    echo "EKS cluster already exists: ${CLUSTER_NAME}"
-  else
-    eksctl create cluster \
-      --name "${CLUSTER_NAME}" \
-      --region "${AWS_REGION}" \
-      --nodes "${NODES}" \
-      --node-type "${NODE_TYPE}" \
-      --managed
-  fi
+if aws eks describe-cluster --region "${AWS_REGION}" --name "${CLUSTER_NAME}" >/dev/null 2>&1; then
+  echo "EKS cluster found: ${CLUSTER_NAME}"
+elif [[ "${CREATE_CLUSTER}" == "true" ]]; then
+  eksctl create cluster \
+    --name "${CLUSTER_NAME}" \
+    --region "${AWS_REGION}" \
+    --nodes "${NODES}" \
+    --node-type "${NODE_TYPE}" \
+    --managed
+else
+  echo "EKS cluster not found: ${CLUSTER_NAME}" >&2
+  echo "Checked AWS account ${AWS_ACCOUNT_ID} in region ${AWS_REGION}." >&2
+  echo "Set CLUSTER_NAME/AWS_REGION to an existing cluster, or set CREATE_CLUSTER=true to create it." >&2
+  exit 1
 fi
 
 aws eks update-kubeconfig --region "${AWS_REGION}" --name "${CLUSTER_NAME}"
