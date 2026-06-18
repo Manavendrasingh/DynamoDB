@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dynamo-db-api-config
+  namespace: dynamo-db-api
+data:
+  PORT: "3000"
+  AWS_REGION: "us-east-1"
+  USERS_TABLE_NAME: "Users"

@@ -13,6 +13,12 @@ commands:
           name: Install AWS CLI
           command: scripts/install-aws-cli.sh
 
+  install_k8s_tools:
+    steps:
+      - run:
+          name: Install kubectl and eksctl
+          command: scripts/install-k8s-tools.sh
+
   restore_npm_cache:
     steps:
       - restore_cache:
@@ -28,10 +34,20 @@ commands:
             - ~/.npm
 
 jobs:
-  install-dependencies:
+  checkout-code:
     executor: node
     steps:
       - checkout
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - .
+
+  install-dependencies:
+    executor: node
+    steps:
+      - attach_workspace:
+          at: ~/project
       - restore_npm_cache
       - run:
           name: Install dependencies
@@ -41,7 +57,8 @@ jobs:
   lint:
     executor: node
     steps:
-      - checkout
+      - attach_workspace:
+          at: ~/project
       - restore_npm_cache
       - run:
           name: Install dependencies
@@ -53,7 +70,8 @@ jobs:
   test:
     executor: node
     steps:
-      - checkout
+      - attach_workspace:
+          at: ~/project
       - restore_npm_cache
       - run:
           name: Install dependencies
@@ -65,7 +83,8 @@ jobs:
   build:
     executor: node
     steps:
-      - checkout
+      - attach_workspace:
+          at: ~/project
       - restore_npm_cache
       - run:
           name: Install dependencies
@@ -79,38 +98,46 @@ jobs:
     environment:
       ECR_REPOSITORY_NAME: dynamo-db-api
     steps:
-      - checkout
+      - attach_workspace:
+          at: ~/project
       - setup_remote_docker:
           docker_layer_caching: true
       - install_aws_cli
       - run:
-          name: Build and push Docker image
-          command: scripts/build-and-push-image.sh
+          name: Build and push Docker image to ECR
+          command: IMAGE_ENV_FILE=image.env scripts/build-and-push-image.sh
       - persist_to_workspace:
-          root: /tmp/image
+          root: ~/project
           paths:
             - image.env
 
-  deploy:
+  deploy-eks:
     executor: node
     environment:
-      PROJECT_NAME: dynamo-db-api
-      ENVIRONMENT_NAME: dev
-      STACK_NAME: dynamo-db-api-dev
+      ECR_REPOSITORY_NAME: dynamo-db-api
       USERS_TABLE_NAME: Users
     steps:
-      - checkout
       - attach_workspace:
-          at: /tmp/image
+          at: ~/project
       - install_aws_cli
+      - install_k8s_tools
       - run:
-          name: Deploy CloudFormation stack
-          command: scripts/deploy-stack.sh
+          name: Deploy ECR image to EKS
+          command: |
+            source image.env
+            SKIP_IMAGE_BUILD=true scripts/deploy-eks.sh
 
 workflows:
   deploy:
     jobs:
+      - checkout-code:
+          filters:
+            branches:
+              only:
+                - main
       - install-dependencies:
+          requires:
+            - checkout-code
           filters:
             branches:
               only:
@@ -145,7 +172,7 @@ workflows:
             branches:
               only:
                 - main
-      - deploy:
+      - deploy-eks:
           requires:
             - build-and-push-image
           filters:
