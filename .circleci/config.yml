@@ -116,6 +116,9 @@ jobs:
     environment:
       ECR_REPOSITORY_NAME: dynamo-db-api
       USERS_TABLE_NAME: Users
+      CREATE_CLUSTER: "true"
+      NODE_TYPE: t3.small
+      NODES: "2"
     steps:
       - attach_workspace:
           at: ~/project
